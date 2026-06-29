@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, getApiKey, setApiKey } from "./api";
 import type {
+  ConnectorStatus,
   CustomerInbox,
   MergeSuggestion,
   RequestDetail,
@@ -21,6 +22,7 @@ export default function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [customers, setCustomers] = useState<CustomerInbox[]>([]);
   const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([]);
+  const [connector, setConnector] = useState<ConnectorStatus | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<number | null>(null);
   const [openRequest, setOpenRequest] = useState<RequestDetail | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -29,16 +31,39 @@ export default function App() {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const [s, inbox, sug] = await Promise.all([api.stats(), api.inbox(), api.suggestions()]);
+      const [s, inbox, sug, conn] = await Promise.all([
+        api.stats(),
+        api.inbox(),
+        api.suggestions(),
+        api.connectorStatus(),
+      ]);
       setStats(s);
       setCustomers(inbox);
       setSuggestions(sug);
+      setConnector(conn);
       setConnected(true);
     } catch (e) {
       setConnected(false);
       setError((e as Error).message);
     }
   }, []);
+
+  async function connectGmail() {
+    try {
+      const { authorization_url } = await api.gmailAuthorize();
+      window.location.href = authorization_url;
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function disconnectGmail() {
+    try {
+      setConnector(await api.gmailDisconnect());
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
 
   useEffect(() => {
     api
@@ -82,6 +107,9 @@ export default function App() {
         connected={connected}
         provider={provider}
         stats={stats}
+        connector={connector}
+        onConnectGmail={connectGmail}
+        onDisconnectGmail={disconnectGmail}
       />
 
       {error && (
@@ -153,6 +181,9 @@ function TopBar(props: {
   connected: boolean | null;
   provider: { llm: string; connector: string } | null;
   stats: Stats | null;
+  connector: ConnectorStatus | null;
+  onConnectGmail: () => void;
+  onDisconnectGmail: () => void;
 }) {
   return (
     <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-6 flex-wrap">
@@ -176,6 +207,11 @@ function TopBar(props: {
       )}
 
       <div className="ml-auto flex items-center gap-2">
+        <GmailControl
+          connector={props.connector}
+          onConnect={props.onConnectGmail}
+          onDisconnect={props.onDisconnectGmail}
+        />
         <input
           type="password"
           placeholder="API key"
@@ -204,6 +240,46 @@ function TopBar(props: {
         />
       </div>
     </header>
+  );
+}
+
+function GmailControl({
+  connector,
+  onConnect,
+  onDisconnect,
+}: {
+  connector: ConnectorStatus | null;
+  onConnect: () => void;
+  onDisconnect: () => void;
+}) {
+  if (!connector) return null;
+  if (connector.gmail_connected) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <span
+          className="text-xs px-2 py-1 rounded bg-emerald-50 text-emerald-700 border border-emerald-200"
+          title={connector.gmail_address || "Gmail connected"}
+        >
+          ✉ {connector.gmail_address || "Gmail"}
+        </span>
+        <button
+          onClick={onDisconnect}
+          className="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-600"
+        >
+          Disconnect
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={onConnect}
+      disabled={!connector.gmail_configured}
+      title={connector.gmail_configured ? "Authorize Gmail access" : "Set GMAIL_CLIENT_ID/SECRET to enable"}
+      className="text-sm px-3 py-1 rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
+    >
+      Connect Gmail
+    </button>
   );
 }
 

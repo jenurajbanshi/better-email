@@ -1,4 +1,5 @@
 import type {
+  ConnectorStatus,
   CustomerInbox,
   MergeSuggestion,
   RequestDetail,
@@ -46,4 +47,7 @@ export const api = {
   suggestions: () => request<MergeSuggestion[]>("/suggestions"),
   acceptSuggestion: (id: number) => request(`/suggestions/${id}/accept`, { method: "POST" }),
   rejectSuggestion: (id: number) => request(`/suggestions/${id}/reject`, { method: "POST" }),
+  connectorStatus: () => request<ConnectorStatus>("/connectors"),
+  gmailAuthorize: () => request<{ authorization_url: string }>("/connectors/gmail/authorize"),
+  gmailDisconnect: () => request<ConnectorStatus>("/connectors/gmail/disconnect", { method: "POST" }),
 };
