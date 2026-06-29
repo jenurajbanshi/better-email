@@ -29,8 +29,12 @@ class GmailConnector(Connector):
         self.client_secret = client_secret
         self.token = token  # decrypted OAuth token dict (refresh handled by client)
         self.owner_address = owner_address.lower()
+        self._creds = None
+        self._service_obj = None
 
     def _service(self):
+        if self._service_obj is not None:
+            return self._service_obj
         try:
             from google.oauth2.credentials import Credentials  # lazy
             from googleapiclient.discovery import build
@@ -38,7 +42,7 @@ class GmailConnector(Connector):
             raise RuntimeError(
                 "Install google-api-python-client and google-auth to use the Gmail connector."
             ) from e
-        creds = Credentials(
+        self._creds = Credentials(
             token=self.token.get("access_token"),
             refresh_token=self.token.get("refresh_token"),
             token_uri="https://oauth2.googleapis.com/token",
@@ -46,7 +50,28 @@ class GmailConnector(Connector):
             client_secret=self.client_secret,
             scopes=GMAIL_SCOPES,
         )
-        return build("gmail", "v1", credentials=creds, cache_discovery=False)
+        self._service_obj = build("gmail", "v1", credentials=self._creds, cache_discovery=False)
+        return self._service_obj
+
+    def export_token(self) -> dict | None:
+        """Return the (possibly refreshed) token so callers can persist it.
+
+        The Google client transparently refreshes the access token on expiry;
+        we surface the new value here so the encrypted copy at rest stays
+        current and the user never has to re-authorize.
+        """
+        creds = self._creds
+        if creds is None:
+            return None
+        token = dict(self.token)
+        if getattr(creds, "token", None):
+            token["access_token"] = creds.token
+        if getattr(creds, "refresh_token", None):
+            token["refresh_token"] = creds.refresh_token
+        expiry = getattr(creds, "expiry", None)
+        if expiry is not None:
+            token["expiry"] = expiry.isoformat()
+        return token
 
     def fetch_messages(self, since: datetime | None = None) -> list[NormalizedMessage]:  # pragma: no cover - needs creds
         service = self._service()
@@ -54,10 +79,22 @@ class GmailConnector(Connector):
         if since:
             query = f"after:{int(since.timestamp())}"
         result: list[NormalizedMessage] = []
-        resp = service.users().messages().list(userId="me", q=query, maxResults=100).execute()
-        for ref in resp.get("messages", []):
-            full = service.users().messages().get(userId="me", id=ref["id"], format="full").execute()
-            result.append(self._normalize(full))
+        page_token: str | None = None
+        # Paginate so a full mailbox (or a large incremental window) is captured,
+        # not just the first 100 messages.
+        while True:
+            resp = (
+                service.users()
+                .messages()
+                .list(userId="me", q=query, maxResults=100, pageToken=page_token)
+                .execute()
+            )
+            for ref in resp.get("messages", []):
+                full = service.users().messages().get(userId="me", id=ref["id"], format="full").execute()
+                result.append(self._normalize(full))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
         return result
 
     def _normalize(self, msg: dict) -> NormalizedMessage:  # pragma: no cover - needs creds
