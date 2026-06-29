@@ -26,8 +26,10 @@ Lint/test/build (see `Makefile` / `README.md`):
 - The backend venv lives at `backend/.venv`. The dependency-refresh/update script
   creates it and installs `backend/requirements.txt`; activate it with
   `. backend/.venv/bin/activate` before running uvicorn/pytest manually.
-- Creating the venv requires the system package `python3.12-venv` (already present
-  in the VM snapshot). Stock `python3 -m venv` fails without it.
+- Creating the venv requires the system package `python3.12-venv`; stock
+  `python3 -m venv` fails without it. It is installed during environment setup
+  (and captured in the VM snapshot). If `python3 -m venv` ever fails on a fresh
+  pod, reinstall it with `sudo apt-get install -y python3.12-venv`.
 - The default owner API key is `dev-owner-key-change-me` (from `OWNER_API_KEY`).
   In the UI you must paste this key, click **Connect**, then **Sync now** before
   any customers appear — the SPA does not auto-sync on load.
