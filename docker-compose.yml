@@ -1,0 +1,37 @@
+# Local one-command bring-up.
+#   docker compose up --build           -> app on SQLite (Tier 1)
+#   docker compose --profile pg up       -> app + Postgres (Tier 2, Railway-like)
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: dev
+      # Default SQLite on a named volume. Uncomment DATABASE_URL (and the `pg`
+      # profile below) to use Postgres instead.
+      DATABASE_URL: sqlite:////data/better_email.db
+      # DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/better_email
+      SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-change-me}
+      OWNER_API_KEY: ${OWNER_API_KEY:-dev-owner-key-change-me}
+      OWNER_EMAIL: ${OWNER_EMAIL:-owner@example.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8000}
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_MODEL: ${LLM_MODEL:-mock-small}
+      CONNECTOR: ${CONNECTOR:-mock}
+    volumes:
+      - app-data:/data
+
+  db:
+    image: postgres:16-alpine
+    profiles: ["pg"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: better_email
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+volumes:
+  app-data:
+  pg-data:
