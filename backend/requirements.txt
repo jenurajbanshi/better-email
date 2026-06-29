@@ -10,5 +10,10 @@ httpx==0.28.1
 # Postgres driver (used when DATABASE_URL points at Postgres, e.g. on Railway)
 psycopg[binary]==3.2.3
 
+# Gmail connector (live OAuth). Imported lazily, so the app still runs offline
+# with the mock connector if these are absent.
+google-auth==2.38.0
+google-api-python-client==2.161.0
+
 # --- dev / test ---
 pytest==8.3.4
