@@ -134,3 +134,6 @@ Shipped: the full offline vertical slice (engine + API + UI + mock environment +
 tests + Docker/CI). Natural follow-ups: live Gmail OAuth hookup, real-model
 evaluation against the golden scenarios, background-sync worker, and multi-user
 accounts (the `owner_id` scoping is already in place).
+
+See [`ROADMAP.md`](./ROADMAP.md) for the full feature list — what's shipped,
+high-value follow-ups, deliberately deferred items, and known risks.
