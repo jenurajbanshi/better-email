@@ -67,3 +67,11 @@ export interface MergeSuggestion {
   confidence: number;
   status: string;
 }
+
+export interface ConnectorStatus {
+  active: string;
+  gmail_configured: boolean;
+  gmail_connected: boolean;
+  gmail_address: string | null;
+  last_sync_at: string | null;
+}

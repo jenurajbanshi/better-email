@@ -95,6 +95,18 @@ class DraftOut(BaseModel):
     draft: str
 
 
+class ConnectorStatusOut(BaseModel):
+    active: str
+    gmail_configured: bool
+    gmail_connected: bool
+    gmail_address: str | None
+    last_sync_at: datetime | None
+
+
+class AuthUrlOut(BaseModel):
+    authorization_url: str
+
+
 class ReplyIn(BaseModel):
     body: str
 

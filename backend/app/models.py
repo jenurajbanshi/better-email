@@ -189,6 +189,30 @@ class MergeSuggestion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ConnectorAccount(Base):
+    """A connected external account (e.g. Gmail) for one owner.
+
+    The OAuth token is stored ONLY encrypted at rest (Fernet via SECRET_KEY).
+    ``last_sync_at`` is the incremental-sync cursor and ``history_id`` is kept
+    for a future Gmail history.list / Pub/Sub push upgrade.
+    """
+
+    __tablename__ = "connector_accounts"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "platform", name="uq_connector_owner_platform"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("owners.id", ondelete="CASCADE"), index=True)
+    platform: Mapped[str] = mapped_column(String(64))
+    account_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    encrypted_token: Mapped[str] = mapped_column(Text)
+    history_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class AuditLog(Base):
     """Append-only record of consequential actions (merges, sends, splits)."""
 

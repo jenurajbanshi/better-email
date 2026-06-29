@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..connectors import gmail_oauth
 from ..db import get_session
 from ..llm.factory import get_llm
 from ..models import (
@@ -22,9 +25,13 @@ from ..models import (
     RequestStatus,
     SuggestionStatus,
 )
+from ..services import credentials
 from ..services.sync import build_connector, run_sync
 from ..services.triage import is_forgotten, recompute_request
+from ..security import sign_oauth_state, verify_oauth_state
 from ..schemas import (
+    AuthUrlOut,
+    ConnectorStatusOut,
     CustomerDetailOut,
     CustomerInboxOut,
     DraftOut,
@@ -126,6 +133,103 @@ def sync(session: Session = Depends(get_session), owner: Owner = Depends(get_cur
     return SyncResultOut(fetched=result.fetched, ingested=result.ingested, skipped=result.skipped)
 
 
+@router.get("/connectors", response_model=ConnectorStatusOut)
+def connector_status(session: Session = Depends(get_session), owner: Owner = Depends(get_current_owner)):
+    settings = get_settings()
+    account = credentials.get_account(session, owner.id)
+    return ConnectorStatusOut(
+        active=settings.connector,
+        gmail_configured=bool(settings.gmail_client_id and settings.gmail_client_secret),
+        gmail_connected=account is not None,
+        gmail_address=account.account_email if account else None,
+        last_sync_at=account.last_sync_at if account else None,
+    )
+
+
+@router.get("/connectors/gmail/authorize", response_model=AuthUrlOut)
+def gmail_authorize(owner: Owner = Depends(get_current_owner)):
+    settings = get_settings()
+    if not (settings.gmail_client_id and settings.gmail_client_secret):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Gmail OAuth is not configured. Set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET.",
+        )
+    state = sign_oauth_state(owner.id)
+    return AuthUrlOut(authorization_url=gmail_oauth.authorization_url(settings, state))
+
+
+def _callback_page(title: str, message: str, ok: bool) -> HTMLResponse:
+    color = "#059669" if ok else "#e11d48"
+    html = f"""<!doctype html><html><head><meta charset="utf-8">
+<title>{title}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body {{ font-family: system-ui, sans-serif; background:#f8fafc; color:#1e293b;
+         display:flex; min-height:100vh; align-items:center; justify-content:center; margin:0; }}
+  .card {{ background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:32px 40px;
+           text-align:center; max-width:420px; }}
+  h1 {{ color:{color}; font-size:20px; margin:0 0 8px; }}
+  p {{ color:#475569; font-size:14px; line-height:1.5; }}
+  a {{ color:#4f46e5; }}
+</style></head>
+<body><div class="card"><h1>{title}</h1><p>{message}</p>
+<p><a href="/">Return to better-email</a></p></div></body></html>"""
+    return HTMLResponse(content=html, status_code=200 if ok else 400)
+
+
+@router.get("/connectors/gmail/callback")
+def gmail_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    session: Session = Depends(get_session),
+):
+    if error:
+        return _callback_page("Gmail connection cancelled", f"Google returned: {error}", ok=False)
+    if not code or not state:
+        return _callback_page("Gmail connection failed", "Missing authorization code or state.", ok=False)
+    try:
+        owner_id = verify_oauth_state(state)
+    except ValueError:
+        return _callback_page("Gmail connection failed", "Invalid or expired authorization state.", ok=False)
+    owner = session.get(Owner, owner_id)
+    if owner is None:
+        return _callback_page("Gmail connection failed", "Unknown account.", ok=False)
+
+    settings = get_settings()
+    try:
+        token = gmail_oauth.exchange_code(settings, code)
+        profile = gmail_oauth.fetch_profile(token)
+    except httpx.HTTPError as e:
+        return _callback_page("Gmail connection failed", f"Token exchange failed: {e}", ok=False)
+
+    credentials.save_account(
+        session,
+        owner_id,
+        token=token,
+        account_email=profile.get("emailAddress"),
+        history_id=str(profile["historyId"]) if profile.get("historyId") else None,
+    )
+    session.add(
+        AuditLog(owner_id=owner_id, action="gmail_connected", detail={"address": profile.get("emailAddress")})
+    )
+    session.commit()
+    return _callback_page(
+        "Gmail connected",
+        f"{profile.get('emailAddress', 'Your mailbox')} is now connected. You can start syncing.",
+        ok=True,
+    )
+
+
+@router.post("/connectors/gmail/disconnect", response_model=ConnectorStatusOut)
+def gmail_disconnect(session: Session = Depends(get_session), owner: Owner = Depends(get_current_owner)):
+    removed = credentials.delete_account(session, owner.id)
+    if removed:
+        session.add(AuditLog(owner_id=owner.id, action="gmail_disconnected", detail={}))
+        session.commit()
+    return connector_status(session, owner)
+
+
 @router.get("/inbox", response_model=list[CustomerInboxOut])
 def inbox(session: Session = Depends(get_session), owner: Owner = Depends(get_current_owner)):
     customers = session.scalars(select(Customer).where(Customer.owner_id == owner.id)).all()
@@ -208,8 +312,15 @@ def send_reply(request_id: int, payload: ReplyIn, session: Session = Depends(get
     subject = r.title if r.title.lower().startswith("re:") else f"Re: {r.title}"
     thread_id = next((m.thread_id for m in reversed(msgs) if m.thread_id), None)
 
-    connector = build_connector()
+    connector = build_connector(session=session, owner_id=owner.id)
     sent_id = connector.send_reply(to=[to_addr], subject=subject, body=payload.body, thread_id=thread_id)
+
+    # Persist any token the connector refreshed while sending.
+    if hasattr(connector, "export_token"):
+        account = credentials.get_account(session, owner.id)
+        refreshed = connector.export_token()
+        if account is not None and refreshed is not None:
+            credentials.update_token(session, account, refreshed)
 
     # Attach the outbound message directly to THIS request (no re-grouping).
     reply_msg = Message(
